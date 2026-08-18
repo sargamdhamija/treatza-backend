@@ -16,6 +16,7 @@ public class TreatzaServer {
     static String razorpaySecret;
     static String razorpayWebhookSecret;
     static OrderStore store;
+    static UserStore users;
 
     public static void main(String[] args) throws Exception {
         Env env = new Env(".env");
@@ -26,12 +27,14 @@ public class TreatzaServer {
         razorpayWebhookSecret = env.get("RAZORPAY_WEBHOOK_SECRET", "");
         String databaseUrl = env.get("DATABASE_URL", "");
         store = new OrderStore(databaseUrl);
+        users = new UserStore(databaseUrl);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/health", TreatzaServer::handleHealth);
         server.createContext("/api/orders", TreatzaServer::handleOrders);
         server.createContext("/api/payment-links", TreatzaServer::handlePaymentLinks);
         server.createContext("/api/razorpay-webhook", TreatzaServer::handleWebhook);
+        server.createContext("/api/auth", TreatzaServer::handleAuth);
         server.createContext("/", TreatzaServer::handleStatic);
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
@@ -217,6 +220,78 @@ public class TreatzaServer {
         sendJson(ex, 200, resp);
     }
 
+    /* ---------------- customer auth (signup / login / me / logout) ---------------- */
+
+    @SuppressWarnings("unchecked")
+    static void handleAuth(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+
+        String path = ex.getRequestURI().getPath();
+        String method = ex.getRequestMethod();
+
+        if (path.equals("/api/auth/signup") && method.equals("POST")) {
+            Map<String, Object> body;
+            try {
+                body = (Map<String, Object>) Json.parse(readBody(ex));
+            } catch (Exception e) {
+                sendError(ex, 400, "Invalid JSON body");
+                return;
+            }
+            UserStore.AuthResult result = users.signup(
+                    Json.getString(body, "name", ""),
+                    Json.getString(body, "phone", ""),
+                    Json.getString(body, "password", ""));
+            if (!result.ok) { sendError(ex, 409, result.errorMessage); return; }
+            sendJson(ex, 201, authResponse(result));
+            return;
+        }
+
+        if (path.equals("/api/auth/login") && method.equals("POST")) {
+            Map<String, Object> body;
+            try {
+                body = (Map<String, Object>) Json.parse(readBody(ex));
+            } catch (Exception e) {
+                sendError(ex, 400, "Invalid JSON body");
+                return;
+            }
+            UserStore.AuthResult result = users.login(
+                    Json.getString(body, "phone", ""),
+                    Json.getString(body, "password", ""));
+            if (!result.ok) { sendError(ex, 401, result.errorMessage); return; }
+            sendJson(ex, 200, authResponse(result));
+            return;
+        }
+
+        if (path.equals("/api/auth/logout") && method.equals("POST")) {
+            users.logout(bearerToken(ex));
+            sendJson(ex, 200, Collections.singletonMap("ok", true));
+            return;
+        }
+
+        if (path.equals("/api/auth/me") && method.equals("GET")) {
+            Map<String, Object> user = users.userForToken(bearerToken(ex));
+            if (user == null) { sendError(ex, 401, "Not logged in"); return; }
+            sendJson(ex, 200, user);
+            return;
+        }
+
+        sendError(ex, 404, "Not found");
+    }
+
+    static Map<String, Object> authResponse(UserStore.AuthResult result) {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("token", result.token);
+        resp.put("user", result.user);
+        return resp;
+    }
+
+    static String bearerToken(HttpExchange ex) {
+        String header = ex.getRequestHeaders().getFirst("Authorization");
+        if (header == null || !header.startsWith("Bearer ")) return null;
+        return header.substring("Bearer ".length()).trim();
+    }
+
     /* ---------------- static file serving (admin.html) ---------------- */
 
     static void handleStatic(HttpExchange ex) throws IOException {
@@ -250,8 +325,13 @@ public class TreatzaServer {
     /* ---------------- helpers ---------------- */
 
     static boolean checkAdmin(HttpExchange ex) throws IOException {
-        Map<String, String> query = parseQuery(ex.getRequestURI().getRawQuery());
-        String key = query.get("key");
+        // Prefer the X-Admin-Key header (doesn't get logged in URLs/browser history).
+        // The ?key= query param still works too, so old admin.html links keep working.
+        String key = ex.getRequestHeaders().getFirst("X-Admin-Key");
+        if (key == null) {
+            Map<String, String> query = parseQuery(ex.getRequestURI().getRawQuery());
+            key = query.get("key");
+        }
         if (key == null || !key.equals(adminKey)) {
             sendError(ex, 401, "Invalid admin key");
             return false;
@@ -271,7 +351,7 @@ public class TreatzaServer {
         Headers h = ex.getResponseHeaders();
         h.set("Access-Control-Allow-Origin", "*");
         h.set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
-        h.set("Access-Control-Allow-Headers", "Content-Type");
+        h.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Key");
     }
 
     static String readBody(HttpExchange ex) throws IOException {
