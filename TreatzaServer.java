@@ -78,6 +78,12 @@ public class TreatzaServer {
                     return;
                 }
                 String payMethod = Json.getString(body, "payMethod", "cod").equals("upi") ? "upi" : "cod";
+
+                // If the customer is logged in (Authorization header present), tag the
+                // order with their account so it shows up in "my orders" on any device.
+                // Guest checkouts (no/invalid token) still work fine — userId stays null.
+                Map<String, Object> loggedInUser = users.userForToken(bearerToken(ex));
+
                 Map<String, Object> order = new LinkedHashMap<>();
                 order.put("id", genOrderId());
                 order.put("date", Instant.now().toString());
@@ -94,6 +100,7 @@ public class TreatzaServer {
                 order.put("paymentStatus", payMethod.equals("upi") ? "awaiting_payment" : "cod_pending");
                 order.put("orderStatus", "received");
                 order.put("razorpayPaymentLinkId", null);
+                order.put("userId", loggedInUser == null ? null : loggedInUser.get("id"));
 
                 store.add(order);
                 sendJson(ex, 201, order);
@@ -107,6 +114,16 @@ public class TreatzaServer {
                 return;
             }
             sendError(ex, 405, "Method not allowed");
+            return;
+        }
+
+        // /api/orders/mine — logged-in customer's own order history, across devices
+        if (path.equals("/api/orders/mine")) {
+            if (!method.equals("GET")) { sendError(ex, 405, "Method not allowed"); return; }
+            Map<String, Object> user = users.userForToken(bearerToken(ex));
+            if (user == null) { sendError(ex, 401, "Not logged in"); return; }
+            List<Map<String, Object>> orders = store.findByUserId((String) user.get("id"));
+            sendJson(ex, 200, orders);
             return;
         }
 

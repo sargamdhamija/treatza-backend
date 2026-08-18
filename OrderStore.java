@@ -89,10 +89,15 @@ public class OrderStore {
                 "total DOUBLE PRECISION, " +
                 "payment_status TEXT, " +
                 "order_status TEXT, " +
-                "razorpay_payment_link_id TEXT" +
+                "razorpay_payment_link_id TEXT, " +
+                "user_id TEXT" +
                 ")";
+        // ADD COLUMN IF NOT EXISTS also covers databases created before this column
+        // existed, so existing orders keep working without any manual migration.
+        String addUserIdColumn = "ALTER TABLE orders ADD COLUMN IF NOT EXISTS user_id TEXT";
         try (Connection c = connect(); Statement st = c.createStatement()) {
             st.execute(sql);
+            st.execute(addUserIdColumn);
         } catch (SQLException e) {
             throw new RuntimeException("Could not connect to the database — check DATABASE_URL in .env: " + e.getMessage(), e);
         }
@@ -100,8 +105,8 @@ public class OrderStore {
 
     public Map<String, Object> add(Map<String, Object> order) {
         String sql = "INSERT INTO orders (id, order_date, name, phone, address, note, fulfillment, " +
-                "pay_method, items, subtotal, delivery_fee, total, payment_status, order_status, razorpay_payment_link_id) " +
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                "pay_method, items, subtotal, delivery_fee, total, payment_status, order_status, razorpay_payment_link_id, user_id) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, str(order.get("id")));
             ps.setString(2, str(order.get("date")));
@@ -118,11 +123,27 @@ public class OrderStore {
             ps.setString(13, str(order.get("paymentStatus")));
             ps.setString(14, str(order.get("orderStatus")));
             ps.setString(15, str(order.get("razorpayPaymentLinkId")));
+            ps.setString(16, str(order.get("userId"))); // null for guest checkouts
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Could not save order: " + e.getMessage(), e);
         }
         return order;
+    }
+
+    /** All orders placed by a logged-in customer, most recent first. */
+    public List<Map<String, Object>> findByUserId(String userId) {
+        String sql = "SELECT * FROM orders WHERE user_id = ? ORDER BY order_date DESC";
+        List<Map<String, Object>> result = new ArrayList<>();
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) result.add(rowToMap(rs));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not read orders: " + e.getMessage(), e);
+        }
+        return result;
     }
 
     public List<Map<String, Object>> readAll() {
@@ -204,6 +225,7 @@ public class OrderStore {
         m.put("paymentStatus", rs.getString("payment_status"));
         m.put("orderStatus", rs.getString("order_status"));
         m.put("razorpayPaymentLinkId", rs.getString("razorpay_payment_link_id"));
+        m.put("userId", rs.getString("user_id"));
         return m;
     }
 

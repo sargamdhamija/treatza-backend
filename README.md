@@ -96,6 +96,19 @@ API endpoints (all under `/api/auth`):
 - `GET /api/auth/me` — header `Authorization: Bearer <token>` → returns the logged-in user
 - `POST /api/auth/logout` — header `Authorization: Bearer <token>` → invalidates the token
 
+### Orders now follow the logged-in account
+`orders` table has a new `user_id` column (added automatically — no manual migration
+needed, works on existing databases too). When a customer places an order while
+logged in, it's tagged with their account. Guest checkouts still work exactly as
+before — `user_id` is just left empty.
+
+- `GET /api/orders/mine` — header `Authorization: Bearer <token>` → returns that
+  customer's own order history, so it shows up correctly even on a different phone
+  after logging in.
+
+Orders placed before this update, or placed as a guest, won't retroactively show up
+under an account — only new orders placed while logged in get linked.
+
 Sessions last 30 days. Your frontend (app/website) should store the `token` (e.g. in
 `localStorage`) and send it as `Authorization: Bearer <token>` on any request that
 needs to know who the customer is.
