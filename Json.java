@@ -230,4 +230,10 @@ public class Json {
         if (v instanceof Number) return ((Number) v).doubleValue();
         return def;
     }
+
+    public static boolean getBoolean(Map<String, Object> obj, String key, boolean def) {
+        Object v = obj.get(key);
+        if (v instanceof Boolean) return (Boolean) v;
+        return def;
+    }
 }

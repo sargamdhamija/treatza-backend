@@ -17,6 +17,8 @@ public class TreatzaServer {
     static String razorpayWebhookSecret;
     static OrderStore store;
     static UserStore users;
+    static ProductStore products;
+    static SettingsStore settings;
 
     public static void main(String[] args) throws Exception {
         Env env = new Env(".env");
@@ -28,6 +30,8 @@ public class TreatzaServer {
         String databaseUrl = env.get("DATABASE_URL", "");
         store = new OrderStore(databaseUrl);
         users = new UserStore(databaseUrl);
+        products = new ProductStore(databaseUrl);
+        settings = new SettingsStore(databaseUrl);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/health", TreatzaServer::handleHealth);
@@ -35,6 +39,13 @@ public class TreatzaServer {
         server.createContext("/api/payment-links", TreatzaServer::handlePaymentLinks);
         server.createContext("/api/razorpay-webhook", TreatzaServer::handleWebhook);
         server.createContext("/api/auth", TreatzaServer::handleAuth);
+        server.createContext("/api/products", TreatzaServer::handleProducts);
+        server.createContext("/api/admin/products", TreatzaServer::handleAdminProducts);
+        server.createContext("/api/store-status", TreatzaServer::handleStoreStatus);
+        server.createContext("/api/admin/store-status", TreatzaServer::handleAdminStoreStatus);
+        server.createContext("/api/admin/analytics", TreatzaServer::handleAnalytics);
+        server.createContext("/api/admin/staff", TreatzaServer::handleStaff);
+        server.createContext("/api/admin/reset-codes", TreatzaServer::handleResetCodes);
         server.createContext("/", TreatzaServer::handleStatic);
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
@@ -293,6 +304,32 @@ public class TreatzaServer {
             return;
         }
 
+        if (path.equals("/api/auth/forgot-password") && method.equals("POST")) {
+            Map<String, Object> body;
+            try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+            catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+            users.generateResetCode(Json.getString(body, "phone", ""));
+            // Same response whether or not the phone is registered, so this can't be used
+            // to check which numbers have accounts. The bakery owner relays the actual
+            // code to the customer directly — see README for why (no SMS/email service set up).
+            sendJson(ex, 200, Collections.singletonMap("message",
+                    "If this phone number has an account, a reset code was generated. Contact the bakery to get it."));
+            return;
+        }
+
+        if (path.equals("/api/auth/reset-password") && method.equals("POST")) {
+            Map<String, Object> body;
+            try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+            catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+            UserStore.AuthResult result = users.resetPassword(
+                    Json.getString(body, "phone", ""),
+                    Json.getString(body, "code", ""),
+                    Json.getString(body, "newPassword", ""));
+            if (!result.ok) { sendError(ex, 400, result.errorMessage); return; }
+            sendJson(ex, 200, authResponse(result));
+            return;
+        }
+
         sendError(ex, 404, "Not found");
     }
 
@@ -307,6 +344,192 @@ public class TreatzaServer {
         String header = ex.getRequestHeaders().getFirst("Authorization");
         if (header == null || !header.startsWith("Bearer ")) return null;
         return header.substring("Bearer ".length()).trim();
+    }
+
+    /* ---------------- product catalog (public reads) ---------------- */
+
+    static void handleProducts(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        String path = ex.getRequestURI().getPath();
+        String method = ex.getRequestMethod();
+
+        if (path.equals("/api/products") && method.equals("GET")) {
+            sendJson(ex, 200, products.findAll());
+            return;
+        }
+
+        // /api/products/{id}/photo — raw image bytes, publicly viewable (like any product photo)
+        if (path.endsWith("/photo") && method.equals("GET")) {
+            String id = path.substring("/api/products/".length(), path.length() - "/photo".length());
+            String[] photo = products.getPhoto(id);
+            if (photo == null) { sendError(ex, 404, "No photo for this product"); return; }
+            byte[] bytes = Base64.getDecoder().decode(photo[0]);
+            ex.getResponseHeaders().set("Content-Type", photo[1] == null ? "image/jpeg" : photo[1]);
+            ex.getResponseHeaders().set("Cache-Control", "public, max-age=3600");
+            ex.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+            return;
+        }
+
+        sendError(ex, 404, "Not found");
+    }
+
+    /* ---------------- product catalog (admin writes) ---------------- */
+
+    @SuppressWarnings("unchecked")
+    static void handleAdminProducts(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!checkAdmin(ex)) return;
+
+        String path = ex.getRequestURI().getPath();
+        String method = ex.getRequestMethod();
+
+        if (path.equals("/api/admin/products") && method.equals("POST")) {
+            Map<String, Object> body;
+            try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+            catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+            String name = Json.getString(body, "name", "").trim();
+            String cat = Json.getString(body, "cat", "").trim();
+            double price = Json.getDouble(body, "price", -1);
+            if (name.isEmpty() || cat.isEmpty() || price < 0) {
+                sendError(ex, 400, "name, cat and a valid price are required");
+                return;
+            }
+            String id = "pd-" + Long.toString(System.currentTimeMillis(), 36);
+            products.create(id, cat, name, Json.getString(body, "desc", ""), price);
+            sendJson(ex, 201, Collections.singletonMap("id", id));
+            return;
+        }
+
+        // /api/admin/products/{id}/photo
+        if (path.endsWith("/photo") && (method.equals("POST") || method.equals("DELETE"))) {
+            String id = path.substring("/api/admin/products/".length(), path.length() - "/photo".length());
+            if (!products.exists(id)) { sendError(ex, 404, "Product not found"); return; }
+            if (method.equals("DELETE")) {
+                products.removePhoto(id);
+                sendJson(ex, 200, Collections.singletonMap("ok", true));
+                return;
+            }
+            Map<String, Object> body;
+            try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+            catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+            String base64 = Json.getString(body, "imageBase64", "");
+            String mime = Json.getString(body, "mime", "image/jpeg");
+            if (base64.isEmpty()) { sendError(ex, 400, "imageBase64 is required"); return; }
+            products.setPhoto(id, base64, mime);
+            sendJson(ex, 200, Collections.singletonMap("ok", true));
+            return;
+        }
+
+        // /api/admin/products/{id}
+        if (path.startsWith("/api/admin/products/")) {
+            String id = path.substring("/api/admin/products/".length());
+            if (id.isEmpty()) { sendError(ex, 404, "Not found"); return; }
+            if (!products.exists(id)) { sendError(ex, 404, "Product not found"); return; }
+
+            if (method.equals("PATCH")) {
+                Map<String, Object> body;
+                try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+                catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+                products.update(id, body);
+                sendJson(ex, 200, Collections.singletonMap("ok", true));
+                return;
+            }
+            if (method.equals("DELETE")) {
+                products.delete(id);
+                sendJson(ex, 200, Collections.singletonMap("ok", true));
+                return;
+            }
+        }
+
+        sendError(ex, 404, "Not found");
+    }
+
+    /* ---------------- store open/closed status ---------------- */
+
+    static void handleStoreStatus(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "Method not allowed"); return; }
+        sendJson(ex, 200, settings.getStatus());
+    }
+
+    @SuppressWarnings("unchecked")
+    static void handleAdminStoreStatus(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!checkAdmin(ex)) return;
+        if (!ex.getRequestMethod().equals("PATCH")) { sendError(ex, 405, "Method not allowed"); return; }
+        Map<String, Object> body;
+        try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+        catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+        settings.setStatus(Json.getBoolean(body, "isOpen", true), Json.getString(body, "message", ""));
+        sendJson(ex, 200, settings.getStatus());
+    }
+
+    /* ---------------- sales analytics ---------------- */
+
+    static void handleAnalytics(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!checkAdmin(ex)) return;
+        if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "Method not allowed"); return; }
+        sendJson(ex, 200, store.analyticsSummary());
+    }
+
+    /* ---------------- staff/admin accounts ---------------- */
+
+    @SuppressWarnings("unchecked")
+    static void handleStaff(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        String method = ex.getRequestMethod();
+        String path = ex.getRequestURI().getPath();
+
+        if (method.equals("GET")) {
+            if (!checkAdmin(ex)) return;
+            sendJson(ex, 200, users.listStaff());
+            return;
+        }
+
+        if (method.equals("POST") && path.equals("/api/admin/staff")) {
+            // Only the store owner's master key can create new staff/admin logins —
+            // an existing staff account can't grant itself or others more access.
+            if (!checkMasterAdminKey(ex)) return;
+            Map<String, Object> body;
+            try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+            catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+            UserStore.AuthResult result = users.createStaff(
+                    Json.getString(body, "name", ""),
+                    Json.getString(body, "phone", ""),
+                    Json.getString(body, "password", ""),
+                    Json.getString(body, "role", "admin"));
+            if (!result.ok) { sendError(ex, 409, result.errorMessage); return; }
+            sendJson(ex, 201, result.user);
+            return;
+        }
+
+        if (method.equals("DELETE") && path.startsWith("/api/admin/staff/")) {
+            if (!checkMasterAdminKey(ex)) return;
+            String id = path.substring("/api/admin/staff/".length());
+            users.removeStaff(id);
+            sendJson(ex, 200, Collections.singletonMap("ok", true));
+            return;
+        }
+
+        sendError(ex, 404, "Not found");
+    }
+
+    /* ---------------- pending password-reset codes (for the owner to relay) ---------------- */
+
+    static void handleResetCodes(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!checkAdmin(ex)) return;
+        if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "Method not allowed"); return; }
+        sendJson(ex, 200, users.listPendingResetCodes());
     }
 
     /* ---------------- static file serving (admin.html) ---------------- */
@@ -349,11 +572,27 @@ public class TreatzaServer {
             Map<String, String> query = parseQuery(ex.getRequestURI().getRawQuery());
             key = query.get("key");
         }
-        if (key == null || !key.equals(adminKey)) {
-            sendError(ex, 401, "Invalid admin key");
-            return false;
+        if (key != null && key.equals(adminKey)) return true;
+
+        // Also accept a logged-in staff/admin account's session token — lets
+        // the owner invite staff (POST /api/admin/staff) who can then log in
+        // normally with phone+password instead of sharing the master key.
+        if (users.tokenHasAdminRole(bearerToken(ex))) return true;
+
+        sendError(ex, 401, "Invalid admin key");
+        return false;
+    }
+
+    /** True only for the master ADMIN_KEY (from .env) — used to gate creating new staff accounts. */
+    static boolean checkMasterAdminKey(HttpExchange ex) throws IOException {
+        String key = ex.getRequestHeaders().getFirst("X-Admin-Key");
+        if (key == null) {
+            Map<String, String> query = parseQuery(ex.getRequestURI().getRawQuery());
+            key = query.get("key");
         }
-        return true;
+        if (key != null && key.equals(adminKey)) return true;
+        sendError(ex, 401, "Only the store owner's master key can do this");
+        return false;
     }
 
     static boolean isPreflight(HttpExchange ex) throws IOException {
@@ -367,7 +606,7 @@ public class TreatzaServer {
     static void addCors(HttpExchange ex) {
         Headers h = ex.getResponseHeaders();
         h.set("Access-Control-Allow-Origin", "*");
-        h.set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
+        h.set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
         h.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Key");
     }
 

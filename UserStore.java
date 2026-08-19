@@ -84,6 +84,7 @@ public class UserStore {
                 "phone TEXT UNIQUE NOT NULL, " +
                 "password_hash TEXT NOT NULL, " +
                 "password_salt TEXT NOT NULL, " +
+                "role TEXT NOT NULL DEFAULT 'customer', " +
                 "created_at TEXT" +
                 ")";
         String sessions = "CREATE TABLE IF NOT EXISTS sessions (" +
@@ -92,9 +93,20 @@ public class UserStore {
                 "created_at TEXT, " +
                 "expires_at BIGINT" +
                 ")";
+        // A short-lived numeric code used for the "forgot password" flow — see
+        // generateResetCode()/resetPassword() below for how this is used.
+        String resets = "CREATE TABLE IF NOT EXISTS password_resets (" +
+                "phone TEXT PRIMARY KEY, " +
+                "code TEXT NOT NULL, " +
+                "user_id TEXT NOT NULL, " +
+                "expires_at BIGINT NOT NULL" +
+                ")";
+        String addRoleColumn = "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'customer'";
         try (Connection c = connect(); Statement st = c.createStatement()) {
             st.execute(users);
             st.execute(sessions);
+            st.execute(resets);
+            st.execute(addRoleColumn);
         } catch (SQLException e) {
             throw new RuntimeException("Could not set up users/sessions tables — check DATABASE_URL: " + e.getMessage(), e);
         }
@@ -119,31 +131,46 @@ public class UserStore {
     }
 
     public AuthResult signup(String name, String phone, String plainPassword) {
+        return createAccount(name, phone, plainPassword, "customer");
+    }
+
+    /**
+     * Creates a bakery staff/admin account. Only meant to be called after the
+     * caller has already verified the request came from the store owner (the
+     * master ADMIN_KEY) — see TreatzaServer's /api/admin/staff route.
+     */
+    public AuthResult createStaff(String name, String phone, String plainPassword, String role) {
+        if (!role.equals("admin") && !role.equals("super_admin")) role = "admin";
+        return createAccount(name, phone, plainPassword, role);
+    }
+
+    private AuthResult createAccount(String name, String phone, String plainPassword, String role) {
         phone = normalizePhone(phone);
         if (phone.isEmpty()) return AuthResult.fail("Phone number is required");
         if (name == null || name.trim().isEmpty()) return AuthResult.fail("Name is required");
         if (plainPassword == null || plainPassword.length() < 6) return AuthResult.fail("Password must be at least 6 characters");
 
-        if (findByPhone(phone) != null) return AuthResult.fail("An account with this phone number already exists");
+        if (findRawByPhone(phone) != null) return AuthResult.fail("An account with this phone number already exists");
 
         byte[] salt = randomSalt();
         String hash = hash(plainPassword, salt);
         String id = "U-" + Long.toString(System.currentTimeMillis(), 36).toUpperCase();
 
-        String sql = "INSERT INTO users (id, name, phone, password_hash, password_salt, created_at) VALUES (?,?,?,?,?,?)";
+        String sql = "INSERT INTO users (id, name, phone, password_hash, password_salt, role, created_at) VALUES (?,?,?,?,?,?,?)";
         try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, id);
             ps.setString(2, name.trim());
             ps.setString(3, phone);
             ps.setString(4, hash);
             ps.setString(5, encodeSalt(salt));
-            ps.setString(6, Instant.now().toString());
+            ps.setString(6, role);
+            ps.setString(7, Instant.now().toString());
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Could not create account: " + e.getMessage(), e);
         }
 
-        Map<String, Object> user = publicUser(id, name.trim(), phone);
+        Map<String, Object> user = publicUser(id, name.trim(), phone, role);
         String token = createSession(id);
         return AuthResult.success(user, token);
     }
@@ -162,7 +189,7 @@ public class UserStore {
         }
 
         String id = (String) row.get("id");
-        Map<String, Object> user = publicUser(id, (String) row.get("name"), phone);
+        Map<String, Object> user = publicUser(id, (String) row.get("name"), phone, (String) row.get("role"));
         String token = createSession(id);
         return AuthResult.success(user, token);
     }
@@ -181,7 +208,7 @@ public class UserStore {
     /** Returns the logged-in user for a valid, non-expired token, or null. */
     public Map<String, Object> userForToken(String token) {
         if (token == null || token.isEmpty()) return null;
-        String sql = "SELECT u.id, u.name, u.phone, s.expires_at FROM sessions s " +
+        String sql = "SELECT u.id, u.name, u.phone, u.role, s.expires_at FROM sessions s " +
                 "JOIN users u ON u.id = s.user_id WHERE s.token = ?";
         try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, token);
@@ -192,20 +219,151 @@ public class UserStore {
                     logout(token); // expired — clean it up
                     return null;
                 }
-                return publicUser(rs.getString("id"), rs.getString("name"), rs.getString("phone"));
+                return publicUser(rs.getString("id"), rs.getString("name"), rs.getString("phone"), rs.getString("role"));
             }
         } catch (SQLException e) {
             throw new RuntimeException("Could not validate session: " + e.getMessage(), e);
         }
     }
 
-    /* ---------------- lookups ---------------- */
-
-    private Map<String, Object> findByPhone(String phone) {
-        Map<String, Object> row = findRawByPhone(phone);
-        if (row == null) return null;
-        return publicUser((String) row.get("id"), (String) row.get("name"), (String) row.get("phone"));
+    /** True if the token belongs to a logged-in admin or super_admin. */
+    public boolean tokenHasAdminRole(String token) {
+        Map<String, Object> u = userForToken(token);
+        if (u == null) return false;
+        String role = (String) u.get("role");
+        return "admin".equals(role) || "super_admin".equals(role);
     }
+
+    /* ---------------- forgot / reset password ---------------- */
+
+    private static final long RESET_CODE_TTL_MILLIS = 15L * 60 * 1000; // 15 minutes
+
+    /**
+     * Generates a 6-digit reset code for the given phone (if an account exists)
+     * and stores it for 15 minutes. There's no SMS/email service wired up, so
+     * this alone doesn't notify the customer — see /api/admin/reset-codes,
+     * which lets the bakery owner look up a pending code and relay it to the
+     * customer directly (phone call, WhatsApp, in person, etc).
+     *
+     * Returns true either way (whether or not the phone is registered) so the
+     * API response can't be used to check which phone numbers have accounts.
+     */
+    public boolean generateResetCode(String phone) {
+        phone = normalizePhone(phone);
+        Map<String, Object> row = findRawByPhone(phone);
+        if (row == null) return true; // don't reveal whether this phone has an account
+
+        String code = String.format("%06d", new SecureRandom().nextInt(1_000_000));
+        long expiresAt = System.currentTimeMillis() + RESET_CODE_TTL_MILLIS;
+        String sql = "INSERT INTO password_resets (phone, code, user_id, expires_at) VALUES (?,?,?,?) " +
+                "ON CONFLICT (phone) DO UPDATE SET code = EXCLUDED.code, user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, phone);
+            ps.setString(2, code);
+            ps.setString(3, (String) row.get("id"));
+            ps.setLong(4, expiresAt);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not create reset code: " + e.getMessage(), e);
+        }
+        return true;
+    }
+
+    public AuthResult resetPassword(String phone, String code, String newPassword) {
+        phone = normalizePhone(phone);
+        if (newPassword == null || newPassword.length() < 6) return AuthResult.fail("Password must be at least 6 characters");
+
+        String sql = "SELECT code, user_id, expires_at FROM password_resets WHERE phone = ?";
+        String userId = null;
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, phone);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return AuthResult.fail("Invalid or expired code");
+                if (rs.getLong("expires_at") < System.currentTimeMillis()) return AuthResult.fail("This code has expired — request a new one");
+                if (!constantTimeEquals(rs.getString("code"), code == null ? "" : code.trim())) return AuthResult.fail("Invalid or expired code");
+                userId = rs.getString("user_id");
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not check reset code: " + e.getMessage(), e);
+        }
+
+        byte[] salt = randomSalt();
+        String hash = hash(newPassword, salt);
+        String update = "UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(update)) {
+            ps.setString(1, hash);
+            ps.setString(2, encodeSalt(salt));
+            ps.setString(3, userId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not update password: " + e.getMessage(), e);
+        }
+
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("DELETE FROM password_resets WHERE phone = ?")) {
+            ps.setString(1, phone);
+            ps.executeUpdate();
+        } catch (SQLException e) { /* non-fatal */ }
+
+        String token = createSession(userId);
+        Map<String, Object> row = findRawByPhone(phone);
+        Map<String, Object> user = publicUser(userId, (String) row.get("name"), phone, (String) row.get("role"));
+        return AuthResult.success(user, token);
+    }
+
+    /** For the admin dashboard — lists phones with an unexpired reset code pending, so the owner can relay it. */
+    public List<Map<String, Object>> listPendingResetCodes() {
+        String sql = "SELECT r.phone, r.code, r.expires_at, u.name FROM password_resets r " +
+                "JOIN users u ON u.id = r.user_id WHERE r.expires_at > ? ORDER BY r.expires_at DESC";
+        List<Map<String, Object>> result = new ArrayList<>();
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, System.currentTimeMillis());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("phone", rs.getString("phone"));
+                    m.put("code", rs.getString("code"));
+                    m.put("name", rs.getString("name"));
+                    m.put("expiresAt", rs.getLong("expires_at"));
+                    result.add(m);
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not list reset codes: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
+    /* ---------------- staff/admin account listing ---------------- */
+
+    public List<Map<String, Object>> listStaff() {
+        String sql = "SELECT id, name, phone, role, created_at FROM users WHERE role IN ('admin','super_admin') ORDER BY created_at";
+        List<Map<String, Object>> result = new ArrayList<>();
+        try (Connection c = connect(); Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", rs.getString("id"));
+                m.put("name", rs.getString("name"));
+                m.put("phone", rs.getString("phone"));
+                m.put("role", rs.getString("role"));
+                result.add(m);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not list staff: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
+    public void removeStaff(String userId) {
+        String sql = "DELETE FROM users WHERE id = ? AND role IN ('admin','super_admin')";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, userId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not remove staff account: " + e.getMessage(), e);
+        }
+    }
+
+    /* ---------------- lookups ---------------- */
 
     private Map<String, Object> findRawByPhone(String phone) {
         String sql = "SELECT * FROM users WHERE phone = ?";
@@ -219,6 +377,7 @@ public class UserStore {
                 m.put("phone", rs.getString("phone"));
                 m.put("password_hash", rs.getString("password_hash"));
                 m.put("password_salt", rs.getString("password_salt"));
+                m.put("role", rs.getString("role"));
                 return m;
             }
         } catch (SQLException e) {
@@ -244,11 +403,12 @@ public class UserStore {
 
     /* ---------------- helpers ---------------- */
 
-    private static Map<String, Object> publicUser(String id, String name, String phone) {
+    private static Map<String, Object> publicUser(String id, String name, String phone, String role) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", id);
         m.put("name", name);
         m.put("phone", phone);
+        m.put("role", role == null ? "customer" : role);
         return m;
     }
 

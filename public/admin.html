@@ -37,6 +37,49 @@
   .status-btn.active{background:var(--cocoa);color:var(--cream);border-color:var(--cocoa)}
   .toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
   .toolbar span{font-size:12px;color:var(--inkfaint)}
+  .navtabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  .navtab{flex:1;min-width:70px;text-align:center;padding:10px 6px;border-radius:10px;background:#fff;font-weight:700;font-size:12.5px;cursor:pointer;color:var(--inkfaint);border:1.5px solid #eee}
+  .navtab.active{background:var(--cocoa);color:var(--cream);border-color:var(--cocoa)}
+  .prod{background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 8px rgba(36,24,18,0.06);display:flex;gap:12px}
+  .prod-photo{width:72px;height:72px;border-radius:10px;object-fit:cover;background:var(--cream2);flex-shrink:0}
+  .prod-photo-empty{width:72px;height:72px;border-radius:10px;background:var(--cream2);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:26px}
+  .prod-body{flex:1;min-width:0}
+  .prod-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+  .prod-name{font-weight:700;font-size:14px}
+  .prod-cat{font-size:11px;color:var(--inkfaint);text-transform:uppercase;letter-spacing:0.3px}
+  .prod-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .pill-btn{font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:999px;border:1.5px solid #ddd;background:#fff;cursor:pointer;color:var(--ink)}
+  .pill-btn.danger{color:var(--jam);border-color:var(--jam)}
+  .pill-btn.soldout{background:var(--jam);color:#fff;border-color:var(--jam)}
+  .prod input, .prod textarea{width:100%;padding:8px;border-radius:7px;border:1.5px solid #ddd;font-size:13px;margin-top:4px;font-family:inherit}
+  .price-edit{display:flex;align-items:center;gap:6px;margin-top:6px}
+  .price-edit input{width:80px;margin-top:0}
+  .new-prod-form{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px}
+  .new-prod-form input, .new-prod-form select{width:100%;padding:9px;border-radius:8px;border:1.5px solid #ddd;margin:6px 0;font-size:13.5px}
+  .soldout-badge{display:inline-block;font-size:10.5px;font-weight:700;color:#fff;background:var(--jam);padding:2px 8px;border-radius:999px;margin-left:6px}
+
+  .status-banner{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px}
+  .status-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .toggle-switch{width:48px;height:26px;border-radius:999px;padding:3px;cursor:pointer;transition:background .15s}
+  .toggle-switch.on{background:var(--sage)}
+  .toggle-switch.off{background:#ccc}
+  .toggle-knob{width:20px;height:20px;border-radius:999px;background:#fff;transition:margin-left .15s}
+  .toggle-knob.on{margin-left:22px}
+  .toggle-knob.off{margin-left:0}
+  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+  .stat-card{background:#fff;border-radius:12px;padding:14px;text-align:center}
+  .stat-value{font-size:22px;font-weight:800;color:var(--jam)}
+  .stat-label{font-size:11px;color:var(--inkfaint);margin-top:2px}
+  .section-title{font-weight:700;font-size:14px;margin:18px 0 8px}
+  .day-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+  .day-label{width:64px;color:var(--inkfaint)}
+  .day-bar-track{flex:1;background:var(--cream2);border-radius:6px;height:16px;overflow:hidden}
+  .day-bar-fill{background:var(--jam);height:100%;border-radius:6px}
+  .day-val{width:70px;text-align:right;font-weight:700}
+  .item-row{display:flex;justify-content:space-between;background:#fff;border-radius:10px;padding:10px 14px;margin-bottom:8px;font-size:13px}
+  .staff-row{display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:10px;padding:10px 14px;margin-bottom:8px}
+  .reset-row{display:flex;justify-content:space-between;align-items:center;background:#fff9e6;border:1px solid #f0d878;border-radius:10px;padding:10px 14px;margin-bottom:8px}
+  .reset-code{font-family:monospace;font-size:16px;font-weight:800;letter-spacing:2px;color:var(--jam)}
 </style>
 </head>
 <body>
@@ -56,11 +99,90 @@
   </div>
 
   <div id="dashboard" style="display:none">
-    <div class="toolbar">
-      <span id="countText">Loading…</span>
-      <button class="refresh-btn" onclick="loadOrders()">Refresh</button>
+    <div class="navtabs">
+      <div class="navtab active" id="tabOrdersBtn" onclick="showTab('orders')">🧾 Orders</div>
+      <div class="navtab" id="tabProductsBtn" onclick="showTab('products')">🍞 Products</div>
+      <div class="navtab" id="tabAnalyticsBtn" onclick="showTab('analytics')">📊 Analytics</div>
+      <div class="navtab" id="tabSettingsBtn" onclick="showTab('settings')">⚙️ Settings</div>
     </div>
-    <div id="ordersList"></div>
+
+    <div id="ordersPane">
+      <div class="toolbar">
+        <span id="countText">Loading…</span>
+        <button class="refresh-btn" onclick="loadOrders()">Refresh</button>
+      </div>
+      <div id="ordersList"></div>
+    </div>
+
+    <div id="productsPane" style="display:none">
+      <div class="toolbar">
+        <span id="prodCountText">Loading…</span>
+        <button class="refresh-btn" onclick="toggleNewProductForm()">+ Add item</button>
+      </div>
+
+      <div class="new-prod-form" id="newProdForm" style="display:none">
+        <div style="font-weight:700;margin-bottom:4px">New product</div>
+        <input id="npName" placeholder="Item name">
+        <select id="npCat">
+          <option value="bread">Breads & Loaves</option>
+          <option value="bun">Buns & Pau</option>
+          <option value="pizza">Pizza</option>
+          <option value="burger">Burger & Hot Dog</option>
+          <option value="puff">Puffs & Rolls</option>
+          <option value="toast">Toast & Khari</option>
+        </select>
+        <input id="npDesc" placeholder="Short description (optional)">
+        <input id="npPrice" type="number" placeholder="Price (₹)">
+        <button class="refresh-btn" style="width:100%;margin-top:6px" onclick="createProduct()">Create</button>
+      </div>
+
+      <div id="productsList"></div>
+    </div>
+
+    <div id="analyticsPane" style="display:none">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-value" id="statTotalOrders">–</div><div class="stat-label">TOTAL ORDERS</div></div>
+        <div class="stat-card"><div class="stat-value" id="statTotalRevenue">–</div><div class="stat-label">TOTAL REVENUE</div></div>
+      </div>
+      <div class="section-title">Last 7 days</div>
+      <div id="last7Days"></div>
+      <div class="section-title">Top-selling items</div>
+      <div id="topItems"></div>
+    </div>
+
+    <div id="settingsPane" style="display:none">
+      <div class="section-title" style="margin-top:0">Store status</div>
+      <div class="status-banner">
+        <div class="status-row">
+          <span>Accepting orders</span>
+          <div class="toggle-switch" id="statusToggle" onclick="toggleStoreStatus()">
+            <div class="toggle-knob" id="statusKnob"></div>
+          </div>
+        </div>
+        <input id="statusMessage" placeholder="Message shown to customers when closed (optional)">
+        <button class="refresh-btn" style="width:100%;margin-top:8px" onclick="saveStoreMessage()">Save message</button>
+      </div>
+
+      <div class="section-title">Password reset requests</div>
+      <div id="resetCodesList"></div>
+
+      <div class="section-title">Staff accounts</div>
+      <div id="staffList"></div>
+      <button class="refresh-btn" style="width:100%;margin-top:4px" onclick="toggleNewStaffForm()">+ Add staff login</button>
+      <div class="new-prod-form" id="newStaffForm" style="display:none;margin-top:10px">
+        <input id="staffName" placeholder="Staff name">
+        <input id="staffPhone" placeholder="Phone number">
+        <input id="staffPassword" type="password" placeholder="Password (min 6 characters)">
+        <select id="staffRole">
+          <option value="admin">Admin (dashboard access)</option>
+          <option value="super_admin">Super Admin</option>
+        </select>
+        <button class="refresh-btn" style="width:100%;margin-top:6px" onclick="createStaff()">Create login</button>
+        <div style="font-size:11.5px;color:var(--inkfaint);margin-top:6px">
+          Only works when logged in with the master admin key — staff accounts can't create other staff accounts.
+        </div>
+      </div>
+    </div>
   </div>
 </main>
 
@@ -146,6 +268,314 @@
       body: JSON.stringify({ orderStatus: status })
     });
     loadOrders();
+  }
+
+  /* ---------------- tabs ---------------- */
+
+  function showTab(which){
+    document.getElementById('tabOrdersBtn').classList.toggle('active', which === 'orders');
+    document.getElementById('tabProductsBtn').classList.toggle('active', which === 'products');
+    document.getElementById('tabAnalyticsBtn').classList.toggle('active', which === 'analytics');
+    document.getElementById('tabSettingsBtn').classList.toggle('active', which === 'settings');
+    document.getElementById('ordersPane').style.display = which === 'orders' ? 'block' : 'none';
+    document.getElementById('productsPane').style.display = which === 'products' ? 'block' : 'none';
+    document.getElementById('analyticsPane').style.display = which === 'analytics' ? 'block' : 'none';
+    document.getElementById('settingsPane').style.display = which === 'settings' ? 'block' : 'none';
+    if(which === 'products') loadProducts();
+    if(which === 'analytics') loadAnalytics();
+    if(which === 'settings') loadSettings();
+  }
+
+  /* ---------------- products ---------------- */
+
+  const CAT_LABELS = { bread:'Breads & Loaves', bun:'Buns & Pau', pizza:'Pizza', burger:'Burger & Hot Dog', puff:'Puffs & Rolls', toast:'Toast & Khari' };
+  const CAT_EMOJI = { bread:'🍞', bun:'🥯', pizza:'🍕', burger:'🍔', puff:'🥐', toast:'🥖' };
+
+  function adminHeaders(extra){
+    return Object.assign({ 'X-Admin-Key': ADMIN_KEY }, extra || {});
+  }
+
+  async function loadProducts(){
+    try{
+      const res = await fetch(`${API_BASE}/api/products`, { headers: adminHeaders() });
+      const list = await res.json();
+      document.getElementById('prodCountText').textContent = list.length + ' item' + (list.length===1?'':'s');
+      renderProducts(list);
+    }catch(e){
+      document.getElementById('prodCountText').textContent = 'Could not load products';
+    }
+  }
+
+  function renderProducts(list){
+    const el = document.getElementById('productsList');
+    if(list.length === 0){ el.innerHTML = '<div class="empty">No products yet.</div>'; return; }
+    el.innerHTML = list.map(p => {
+      const photoHtml = p.hasPhoto
+        ? `<img class="prod-photo" src="${API_BASE}/api/products/${p.id}/photo" alt="${p.name}">`
+        : `<div class="prod-photo-empty">${CAT_EMOJI[p.cat] || '🍽️'}</div>`;
+      return `
+        <div class="prod" id="prod-${p.id}">
+          ${photoHtml}
+          <div class="prod-body">
+            <div class="prod-top">
+              <div>
+                <div class="prod-name">${p.name}${p.soldOut ? '<span class="soldout-badge">SOLD OUT</span>' : ''}</div>
+                <div class="prod-cat">${CAT_LABELS[p.cat] || p.cat}</div>
+              </div>
+            </div>
+            <div class="price-edit">
+              <span>₹</span>
+              <input type="number" id="price-${p.id}" value="${p.price}">
+              <button class="pill-btn" onclick="savePrice('${p.id}')">Save</button>
+            </div>
+            <div class="prod-actions">
+              <button class="pill-btn ${p.soldOut ? 'soldout' : ''}" onclick="toggleSoldOut('${p.id}', ${!p.soldOut})">
+                ${p.soldOut ? 'Mark in stock' : 'Mark sold out'}
+              </button>
+              <label class="pill-btn" style="cursor:pointer">
+                📷 ${p.hasPhoto ? 'Change photo' : 'Add photo'}
+                <input type="file" accept="image/*" style="display:none" onchange="uploadPhoto('${p.id}', this)">
+              </label>
+              ${p.hasPhoto ? `<button class="pill-btn" onclick="removePhoto('${p.id}')">Remove photo</button>` : ''}
+              <button class="pill-btn danger" onclick="deleteProduct('${p.id}', '${p.name.replace(/'/g, "\\'")}')">Delete</button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  async function savePrice(id){
+    const price = parseFloat(document.getElementById(`price-${id}`).value);
+    if(isNaN(price) || price < 0) return alert('Enter a valid price');
+    await fetch(`${API_BASE}/api/admin/products/${id}`, {
+      method: 'PATCH', headers: adminHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ price })
+    });
+    loadProducts();
+  }
+
+  async function toggleSoldOut(id, soldOut){
+    await fetch(`${API_BASE}/api/admin/products/${id}`, {
+      method: 'PATCH', headers: adminHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ soldOut })
+    });
+    loadProducts();
+  }
+
+  async function deleteProduct(id, name){
+    if(!confirm(`Delete "${name}"? This can't be undone.`)) return;
+    await fetch(`${API_BASE}/api/admin/products/${id}`, { method: 'DELETE', headers: adminHeaders() });
+    loadProducts();
+  }
+
+  async function removePhoto(id){
+    await fetch(`${API_BASE}/api/admin/products/${id}/photo`, { method: 'DELETE', headers: adminHeaders() });
+    loadProducts();
+  }
+
+  /* Resizes the chosen photo down to a manageable size in the browser before
+     uploading, so photos stay quick to upload and don't bloat the database. */
+  function uploadPhoto(id, input){
+    const file = input.files[0];
+    if(!file) return;
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (e) => { img.src = e.target.result; };
+    img.onload = async () => {
+      const maxDim = 640;
+      let w = img.width, h = img.height;
+      if(w > h && w > maxDim){ h = Math.round(h * maxDim / w); w = maxDim; }
+      else if(h > maxDim){ w = Math.round(w * maxDim / h); h = maxDim; }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+      const base64 = dataUrl.split(',')[1];
+      await fetch(`${API_BASE}/api/admin/products/${id}/photo`, {
+        method: 'POST', headers: adminHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ imageBase64: base64, mime: 'image/jpeg' })
+      });
+      loadProducts();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function toggleNewProductForm(){
+    const f = document.getElementById('newProdForm');
+    f.style.display = f.style.display === 'none' ? 'block' : 'none';
+  }
+
+  async function createProduct(){
+    const name = document.getElementById('npName').value.trim();
+    const cat = document.getElementById('npCat').value;
+    const desc = document.getElementById('npDesc').value.trim();
+    const price = parseFloat(document.getElementById('npPrice').value);
+    if(!name || isNaN(price) || price < 0) return alert('Enter a name and a valid price');
+    await fetch(`${API_BASE}/api/admin/products`, {
+      method: 'POST', headers: adminHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ name, cat, desc, price })
+    });
+    document.getElementById('npName').value = '';
+    document.getElementById('npDesc').value = '';
+    document.getElementById('npPrice').value = '';
+    document.getElementById('newProdForm').style.display = 'none';
+    loadProducts();
+  }
+
+  /* ---------------- analytics ---------------- */
+
+  async function loadAnalytics(){
+    try{
+      const res = await fetch(`${API_BASE}/api/admin/analytics`, { headers: adminHeaders() });
+      const data = await res.json();
+      document.getElementById('statTotalOrders').textContent = data.totalOrders;
+      document.getElementById('statTotalRevenue').textContent = fmt(data.totalRevenue);
+
+      const maxRevenue = Math.max(1, ...data.last7Days.map(d => d.revenue));
+      document.getElementById('last7Days').innerHTML = data.last7Days.map(d => {
+        const pct = Math.round((d.revenue / maxRevenue) * 100);
+        const label = new Date(d.date + 'T00:00:00').toLocaleDateString('en-IN', { day:'2-digit', month:'short' });
+        return `<div class="day-row">
+          <span class="day-label">${label}</span>
+          <div class="day-bar-track"><div class="day-bar-fill" style="width:${pct}%"></div></div>
+          <span class="day-val">${fmt(d.revenue)} · ${d.orders}</span>
+        </div>`;
+      }).join('');
+
+      document.getElementById('topItems').innerHTML = data.topItems.length === 0
+        ? '<div class="empty">No sales yet.</div>'
+        : data.topItems.map(it => `
+          <div class="item-row">
+            <span>${it.name}</span>
+            <span><strong>${it.qty}</strong> sold · ${fmt(it.revenue)}</span>
+          </div>`).join('');
+    }catch(e){
+      document.getElementById('last7Days').innerHTML = '<div class="empty">Could not load analytics.</div>';
+    }
+  }
+
+  /* ---------------- settings: store status ---------------- */
+
+  let currentStoreOpen = true;
+
+  async function loadSettings(){
+    try{
+      const res = await fetch(`${API_BASE}/api/store-status`);
+      const status = await res.json();
+      currentStoreOpen = status.isOpen;
+      renderStoreToggle();
+      document.getElementById('statusMessage').value = status.message || '';
+    }catch(e){}
+    loadResetCodes();
+    loadStaff();
+  }
+
+  function renderStoreToggle(){
+    const toggle = document.getElementById('statusToggle');
+    const knob = document.getElementById('statusKnob');
+    toggle.classList.toggle('on', currentStoreOpen);
+    toggle.classList.toggle('off', !currentStoreOpen);
+    knob.classList.toggle('on', currentStoreOpen);
+    knob.classList.toggle('off', !currentStoreOpen);
+  }
+
+  async function toggleStoreStatus(){
+    currentStoreOpen = !currentStoreOpen;
+    renderStoreToggle();
+    const message = document.getElementById('statusMessage').value.trim();
+    await fetch(`${API_BASE}/api/admin/store-status`, {
+      method: 'PATCH', headers: adminHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ isOpen: currentStoreOpen, message })
+    });
+  }
+
+  async function saveStoreMessage(){
+    const message = document.getElementById('statusMessage').value.trim();
+    await fetch(`${API_BASE}/api/admin/store-status`, {
+      method: 'PATCH', headers: adminHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ isOpen: currentStoreOpen, message })
+    });
+    alert('Saved');
+  }
+
+  /* ---------------- settings: pending password resets ---------------- */
+
+  async function loadResetCodes(){
+    try{
+      const res = await fetch(`${API_BASE}/api/admin/reset-codes`, { headers: adminHeaders() });
+      const list = await res.json();
+      const el = document.getElementById('resetCodesList');
+      if(list.length === 0){ el.innerHTML = '<div class="empty" style="padding:20px">No pending requests.</div>'; return; }
+      el.innerHTML = list.map(r => {
+        const mins = Math.max(0, Math.round((r.expiresAt - Date.now()) / 60000));
+        return `<div class="reset-row">
+          <div>
+            <div style="font-weight:700">${r.name}</div>
+            <div style="font-size:11.5px;color:var(--inkfaint)">${r.phone} · expires in ${mins} min</div>
+          </div>
+          <div class="reset-code">${r.code}</div>
+        </div>`;
+      }).join('');
+    }catch(e){
+      document.getElementById('resetCodesList').innerHTML = '<div class="empty">Could not load.</div>';
+    }
+  }
+
+  /* ---------------- settings: staff accounts ---------------- */
+
+  async function loadStaff(){
+    try{
+      const res = await fetch(`${API_BASE}/api/admin/staff`, { headers: adminHeaders() });
+      const list = await res.json();
+      const el = document.getElementById('staffList');
+      if(list.length === 0){ el.innerHTML = '<div class="empty" style="padding:20px">No staff accounts yet.</div>'; return; }
+      el.innerHTML = list.map(s => `
+        <div class="staff-row">
+          <div>
+            <div style="font-weight:700">${s.name} <span class="soldout-badge" style="background:var(--sage)">${s.role.toUpperCase()}</span></div>
+            <div style="font-size:11.5px;color:var(--inkfaint)">${s.phone}</div>
+          </div>
+          <button class="pill-btn danger" onclick="deleteStaff('${s.id}','${s.name.replace(/'/g,"\\'")}')">Remove</button>
+        </div>`).join('');
+    }catch(e){
+      document.getElementById('staffList').innerHTML = '<div class="empty">Could not load.</div>';
+    }
+  }
+
+  function toggleNewStaffForm(){
+    const f = document.getElementById('newStaffForm');
+    f.style.display = f.style.display === 'none' ? 'block' : 'none';
+  }
+
+  async function createStaff(){
+    const name = document.getElementById('staffName').value.trim();
+    const phone = document.getElementById('staffPhone').value.trim();
+    const password = document.getElementById('staffPassword').value;
+    const role = document.getElementById('staffRole').value;
+    if(!name || !phone || password.length < 6) return alert('Enter a name, phone, and a password with at least 6 characters');
+    const res = await fetch(`${API_BASE}/api/admin/staff`, {
+      method: 'POST', headers: adminHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ name, phone, password, role })
+    });
+    if(!res.ok){
+      const body = await res.json().catch(()=>({}));
+      return alert(body.error || 'Could not create staff login (only the master admin key can do this)');
+    }
+    document.getElementById('staffName').value = '';
+    document.getElementById('staffPhone').value = '';
+    document.getElementById('staffPassword').value = '';
+    document.getElementById('newStaffForm').style.display = 'none';
+    loadStaff();
+  }
+
+  async function deleteStaff(id, name){
+    if(!confirm(`Remove staff login for "${name}"?`)) return;
+    const res = await fetch(`${API_BASE}/api/admin/staff/${id}`, { method: 'DELETE', headers: adminHeaders() });
+    if(!res.ok){
+      const body = await res.json().catch(()=>({}));
+      return alert(body.error || 'Could not remove (only the master admin key can do this)');
+    }
+    loadStaff();
   }
 
   // auto-refresh every 15s

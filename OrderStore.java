@@ -231,4 +231,80 @@ public class OrderStore {
 
     private static String str(Object o) { return o == null ? null : o.toString(); }
     private static double num(Object o) { return (o instanceof Number) ? ((Number) o).doubleValue() : 0; }
+
+    /* ---------------- sales analytics ---------------- */
+
+    /**
+     * Summarizes orders into totals, a top-selling-items list, and a per-day
+     * breakdown for the last 7 days — everything the admin dashboard's
+     * Analytics tab shows. Computed on the fly from the orders table each
+     * time (fine at this scale — no separate reporting table needed).
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> analyticsSummary() {
+        List<Map<String, Object>> orders = readAll();
+
+        double totalRevenue = 0;
+        int totalOrders = orders.size();
+        Map<String, double[]> itemTotals = new LinkedHashMap<>(); // name -> [qty, revenue]
+        Map<String, double[]> dayTotals = new LinkedHashMap<>();  // yyyy-MM-dd -> [orders, revenue]
+
+        for (Map<String, Object> order : orders) {
+            double total = num(order.get("total"));
+            totalRevenue += total;
+
+            String dateStr = str(order.get("date"));
+            String day = (dateStr != null && dateStr.length() >= 10) ? dateStr.substring(0, 10) : "unknown";
+            double[] dayAgg = dayTotals.computeIfAbsent(day, k -> new double[2]);
+            dayAgg[0] += 1;
+            dayAgg[1] += total;
+
+            Object itemsObj = order.get("items");
+            if (itemsObj instanceof List) {
+                for (Object itemObj : (List<Object>) itemsObj) {
+                    if (!(itemObj instanceof Map)) continue;
+                    Map<String, Object> item = (Map<String, Object>) itemObj;
+                    String name = str(item.get("name"));
+                    if (name == null) continue;
+                    double qty = num(item.get("qty"));
+                    double price = num(item.get("price"));
+                    double[] agg = itemTotals.computeIfAbsent(name, k -> new double[2]);
+                    agg[0] += qty;
+                    agg[1] += qty * price;
+                }
+            }
+        }
+
+        List<Map<String, Object>> topItems = new ArrayList<>();
+        for (Map.Entry<String, double[]> e : itemTotals.entrySet()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("name", e.getKey());
+            m.put("qty", e.getValue()[0]);
+            m.put("revenue", e.getValue()[1]);
+            topItems.add(m);
+        }
+        topItems.sort((a, b) -> Double.compare((double) b.get("qty"), (double) a.get("qty")));
+        if (topItems.size() > 10) topItems = topItems.subList(0, 10);
+
+        List<String> last7Days = new ArrayList<>();
+        java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneOffset.UTC);
+        for (int i = 6; i >= 0; i--) last7Days.add(today.minusDays(i).toString());
+
+        List<Map<String, Object>> dailyBreakdown = new ArrayList<>();
+        for (String day : last7Days) {
+            double[] agg = dayTotals.getOrDefault(day, new double[2]);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("date", day);
+            m.put("orders", (int) agg[0]);
+            m.put("revenue", agg[1]);
+            dailyBreakdown.add(m);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalOrders", totalOrders);
+        result.put("totalRevenue", totalRevenue);
+        result.put("topItems", topItems);
+        result.put("last7Days", dailyBreakdown);
+        return result;
+    }
 }

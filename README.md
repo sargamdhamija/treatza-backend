@@ -109,6 +109,83 @@ before — `user_id` is just left empty.
 Orders placed before this update, or placed as a guest, won't retroactively show up
 under an account — only new orders placed while logged in get linked.
 
+## 7. Product catalog (admin-editable, with photos)
+
+Products used to be hardcoded in the app itself. They now live in the database
+(new `products` table, auto-seeded with your original 57-item price list the
+first time the server starts — no manual data entry needed).
+
+- `GET /api/products` — public, returns the full catalog (id, category, name,
+  description, price, `soldOut`, `hasPhoto`) for the app to display
+- `GET /api/products/{id}/photo` — public, returns the raw photo for a product
+- `POST /api/admin/products` — admin only, create a new product
+- `PATCH /api/admin/products/{id}` — admin only, update any of `name`, `cat`,
+  `desc`, `price`, `soldOut`
+- `POST /api/admin/products/{id}/photo` — admin only, body `{ imageBase64, mime }`
+  → uploads/replaces the photo
+- `DELETE /api/admin/products/{id}/photo` — admin only, removes the photo
+- `DELETE /api/admin/products/{id}` — admin only, deletes the product
+
+Photos are stored as base64 text directly in Postgres (not on the server's local
+disk) so they survive redeploys — most hosts like Render wipe local files on every
+deploy. The admin dashboard (`admin.html`) has a new **Products** tab to manage all
+of this — mark items sold out, edit prices, and upload photos — without touching code.
+
+## 8. Roles, staff logins, forgot password, business hours, analytics
+
+### Role-based accounts
+Every account (customer or staff) now has a `role`: `customer`, `admin`, or
+`super_admin`. Your master `ADMIN_KEY` from `.env` still works exactly as before —
+think of it as the one key that always has full access, no matter what. On top of
+that, you can now create proper staff logins (phone + password) that also unlock
+the admin dashboard, without sharing your master key:
+
+- `POST /api/admin/staff` — **master key only** (a staff account can't create more
+  staff accounts) — body `{ name, phone, password, role }` (`role` is `"admin"` or
+  `"super_admin"`)
+- `GET /api/admin/staff` — list staff/admin accounts
+- `DELETE /api/admin/staff/{id}` — master key only, removes a staff account
+
+A staff member logs in through the same `/api/auth/login` customers use — their
+token then works on every `/api/admin/*` route automatically.
+
+### Forgot / reset password
+There's no SMS or email service connected (that needs a paid third-party account
+with its own API key — see the note at the very end of this README). So this works
+in a way that needs no such service:
+
+1. Customer taps "Forgot password" in the app and enters their phone number →
+   `POST /api/auth/forgot-password { phone }`. This generates a 6-digit code valid
+   for 15 minutes, but doesn't send it anywhere yet.
+2. The bakery owner opens the admin dashboard's **Settings** tab, finds the
+   customer's pending code under "Password reset requests", and relays it to them
+   directly — a phone call, WhatsApp message, or in person.
+3. Customer enters the code + a new password in the app →
+   `POST /api/auth/reset-password { phone, code, newPassword }`.
+
+If you later connect an SMS provider, step 2 can be automated — see the note at
+the end of this file.
+
+### Business hours
+- `GET /api/store-status` — public, returns `{ isOpen, message }`
+- `PATCH /api/admin/store-status` — admin only, body `{ isOpen, message }`
+
+The app shows a banner and disables checkout when the store is marked closed.
+Toggle it from the admin dashboard's **Settings** tab.
+
+### Sales analytics
+- `GET /api/admin/analytics` — admin only, returns total orders, total revenue,
+  the top 10 best-selling items, and a day-by-day breakdown for the last 7 days.
+  Shown in the admin dashboard's **Analytics** tab.
+
+### Still needs your own account + API key (not something I can wire up blind)
+- **Order status notifications** (SMS or push) — needs an SMS provider (e.g.
+  Twilio, MSG91) or Firebase for push notifications. Once you have credentials,
+  this plugs in fairly easily on top of the `orderStatus` field that already
+  exists on every order.
+- **Distance-based delivery fee** — needs a maps/geocoding provider (e.g. Google
+  Maps Distance Matrix API), which requires its own billed API key.
+
 Sessions last 30 days. Your frontend (app/website) should store the `token` (e.g. in
 `localStorage`) and send it as `Authorization: Bearer <token>` on any request that
 needs to know who the customer is.
