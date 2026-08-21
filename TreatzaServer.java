@@ -19,6 +19,9 @@ public class TreatzaServer {
     static UserStore users;
     static ProductStore products;
     static SettingsStore settings;
+    static FirebaseAuth firebaseAuth;
+    static FirebaseMessaging pushService;
+    static DeviceTokenStore deviceTokens;
 
     public static void main(String[] args) throws Exception {
         Env env = new Env(".env");
@@ -32,6 +35,9 @@ public class TreatzaServer {
         users = new UserStore(databaseUrl);
         products = new ProductStore(databaseUrl);
         settings = new SettingsStore(databaseUrl);
+        firebaseAuth = new FirebaseAuth(env.get("FIREBASE_PROJECT_ID", "treatzabakery"));
+        pushService = new FirebaseMessaging(env.get("FIREBASE_SERVICE_ACCOUNT_PATH", "firebase-service-account.json"));
+        deviceTokens = new DeviceTokenStore(databaseUrl);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/health", TreatzaServer::handleHealth);
@@ -46,6 +52,7 @@ public class TreatzaServer {
         server.createContext("/api/admin/analytics", TreatzaServer::handleAnalytics);
         server.createContext("/api/admin/staff", TreatzaServer::handleStaff);
         server.createContext("/api/admin/reset-codes", TreatzaServer::handleResetCodes);
+        server.createContext("/api/notifications/register-token", TreatzaServer::handleRegisterDeviceToken);
         server.createContext("/", TreatzaServer::handleStatic);
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
@@ -154,6 +161,11 @@ public class TreatzaServer {
                 if (body.get("orderStatus") != null) patch.put("orderStatus", body.get("orderStatus"));
                 Map<String, Object> updated = store.update(id, patch);
                 if (updated == null) { sendError(ex, 404, "Order not found"); return; }
+
+                if (patch.containsKey("orderStatus")) {
+                    notifyCustomerOfStatusChange(updated);
+                }
+
                 sendJson(ex, 200, updated);
                 return;
             }
@@ -163,6 +175,42 @@ public class TreatzaServer {
 
         sendError(ex, 404, "Not found");
     }
+
+    /** Pushes a notification to the customer's device(s) when their order status changes — silently does nothing if push isn't set up or they're a guest. */
+    static void notifyCustomerOfStatusChange(Map<String, Object> order) {
+        Object userId = order.get("userId");
+        if (userId == null || !pushService.isEnabled()) return;
+
+        String status = String.valueOf(order.get("orderStatus"));
+        String title;
+        String body;
+        switch (status) {
+            case "preparing":
+                title = "Your order is being prepared 👩‍🍳";
+                body = "Order " + order.get("id") + " is being made fresh right now.";
+                break;
+            case "ready":
+                title = "Your order is ready! 🎉";
+                body = "Order " + order.get("id") + " is ready for pickup/delivery.";
+                break;
+            case "completed":
+            case "delivered":
+                title = "Order delivered — enjoy! 🍰";
+                body = "Order " + order.get("id") + " is complete. Thanks for ordering from Treatza!";
+                break;
+            case "cancelled":
+                title = "Order cancelled";
+                body = "Order " + order.get("id") + " was cancelled. Contact the bakery if this is unexpected.";
+                break;
+            default:
+                title = "Order update";
+                body = "Order " + order.get("id") + " status: " + status;
+        }
+
+        List<String> tokens = deviceTokens.tokensForUser((String) userId);
+        pushService.sendToTokens(tokens, title, body);
+    }
+
 
     @SuppressWarnings("unchecked")
     static void handlePaymentLinks(HttpExchange ex) throws IOException {
@@ -294,6 +342,50 @@ public class TreatzaServer {
         if (path.equals("/api/auth/logout") && method.equals("POST")) {
             users.logout(bearerToken(ex));
             sendJson(ex, 200, Collections.singletonMap("ok", true));
+            return;
+        }
+
+        // The app calls this after Firebase Sign-In (email/password or Google) succeeds
+        // on the device — verifies the token server-side, then finds/creates the local
+        // account and returns our own session token, same shape as signup/login above.
+        if (path.equals("/api/auth/firebase-login") && method.equals("POST")) {
+            Map<String, Object> body;
+            try {
+                body = (Map<String, Object>) Json.parse(readBody(ex));
+            } catch (Exception e) {
+                sendError(ex, 400, "Invalid JSON body");
+                return;
+            }
+            String idToken = Json.getString(body, "idToken", "");
+            FirebaseAuth.VerifiedUser verified;
+            try {
+                verified = firebaseAuth.verifyIdToken(idToken);
+            } catch (Exception e) {
+                sendError(ex, 401, "Could not verify Firebase login: " + e.getMessage());
+                return;
+            }
+            UserStore.AuthResult result = users.findOrCreateFirebaseUser(verified.uid, verified.email, verified.name);
+            if (!result.ok) { sendError(ex, 400, result.errorMessage); return; }
+            sendJson(ex, 200, authResponse(result));
+            return;
+        }
+
+        // Mandatory follow-up after a Firebase login, since Google/email sign-in
+        // doesn't collect a phone number — the app should call this right after
+        // firebase-login if the returned user has needsPhone: true.
+        if (path.equals("/api/auth/profile") && method.equals("PATCH")) {
+            Map<String, Object> user = users.userForToken(bearerToken(ex));
+            if (user == null) { sendError(ex, 401, "Not logged in"); return; }
+            Map<String, Object> body;
+            try {
+                body = (Map<String, Object>) Json.parse(readBody(ex));
+            } catch (Exception e) {
+                sendError(ex, 400, "Invalid JSON body");
+                return;
+            }
+            UserStore.AuthResult result = users.setPhone((String) user.get("id"), Json.getString(body, "phone", ""));
+            if (!result.ok) { sendError(ex, 400, result.errorMessage); return; }
+            sendJson(ex, 200, result.user);
             return;
         }
 
@@ -530,6 +622,28 @@ public class TreatzaServer {
         if (!checkAdmin(ex)) return;
         if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "Method not allowed"); return; }
         sendJson(ex, 200, users.listPendingResetCodes());
+    }
+
+    /* ---------------- push notification device tokens ---------------- */
+
+    @SuppressWarnings("unchecked")
+    static void handleRegisterDeviceToken(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!ex.getRequestMethod().equals("POST")) { sendError(ex, 405, "Method not allowed"); return; }
+
+        Map<String, Object> user = users.userForToken(bearerToken(ex));
+        if (user == null) { sendError(ex, 401, "Not logged in"); return; }
+
+        Map<String, Object> body;
+        try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+        catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+
+        String token = Json.getString(body, "token", "");
+        if (token.isEmpty()) { sendError(ex, 400, "token is required"); return; }
+
+        deviceTokens.register((String) user.get("id"), token);
+        sendJson(ex, 200, Collections.singletonMap("ok", true));
     }
 
     /* ---------------- static file serving (admin.html) ---------------- */

@@ -102,11 +102,25 @@ public class UserStore {
                 "expires_at BIGINT NOT NULL" +
                 ")";
         String addRoleColumn = "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'customer'";
+        // Firebase-authenticated accounts (email/password or Google, via the app's
+        // new login screen) don't have a local password or necessarily a phone
+        // number yet — phone is now collected as a mandatory follow-up step after
+        // first login instead of at signup, so these columns must allow NULL.
+        String addFirebaseColumns = "ALTER TABLE users ADD COLUMN IF NOT EXISTS firebase_uid TEXT UNIQUE";
+        String addEmailColumn = "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT";
+        String phoneNullable = "ALTER TABLE users ALTER COLUMN phone DROP NOT NULL";
+        String passHashNullable = "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL";
+        String passSaltNullable = "ALTER TABLE users ALTER COLUMN password_salt DROP NOT NULL";
         try (Connection c = connect(); Statement st = c.createStatement()) {
             st.execute(users);
             st.execute(sessions);
             st.execute(resets);
             st.execute(addRoleColumn);
+            st.execute(addFirebaseColumns);
+            st.execute(addEmailColumn);
+            st.execute(phoneNullable);
+            st.execute(passHashNullable);
+            st.execute(passSaltNullable);
         } catch (SQLException e) {
             throw new RuntimeException("Could not set up users/sessions tables — check DATABASE_URL: " + e.getMessage(), e);
         }
@@ -170,7 +184,7 @@ public class UserStore {
             throw new RuntimeException("Could not create account: " + e.getMessage(), e);
         }
 
-        Map<String, Object> user = publicUser(id, name.trim(), phone, role);
+        Map<String, Object> user = publicUser(id, name.trim(), phone, role, null);
         String token = createSession(id);
         return AuthResult.success(user, token);
     }
@@ -181,6 +195,7 @@ public class UserStore {
         if (row == null) return AuthResult.fail("Invalid phone number or password");
 
         String storedHash = (String) row.get("password_hash");
+        if (storedHash == null || storedHash.isEmpty()) return AuthResult.fail("Invalid phone number or password");
         byte[] salt = decodeSalt((String) row.get("password_salt"));
         String attemptHash = hash(plainPassword == null ? "" : plainPassword, salt);
 
@@ -189,7 +204,7 @@ public class UserStore {
         }
 
         String id = (String) row.get("id");
-        Map<String, Object> user = publicUser(id, (String) row.get("name"), phone, (String) row.get("role"));
+        Map<String, Object> user = publicUser(id, (String) row.get("name"), phone, (String) row.get("role"), (String) row.get("email"));
         String token = createSession(id);
         return AuthResult.success(user, token);
     }
@@ -208,7 +223,7 @@ public class UserStore {
     /** Returns the logged-in user for a valid, non-expired token, or null. */
     public Map<String, Object> userForToken(String token) {
         if (token == null || token.isEmpty()) return null;
-        String sql = "SELECT u.id, u.name, u.phone, u.role, s.expires_at FROM sessions s " +
+        String sql = "SELECT u.id, u.name, u.phone, u.role, u.email, s.expires_at FROM sessions s " +
                 "JOIN users u ON u.id = s.user_id WHERE s.token = ?";
         try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, token);
@@ -219,7 +234,7 @@ public class UserStore {
                     logout(token); // expired — clean it up
                     return null;
                 }
-                return publicUser(rs.getString("id"), rs.getString("name"), rs.getString("phone"), rs.getString("role"));
+                return publicUser(rs.getString("id"), rs.getString("name"), rs.getString("phone"), rs.getString("role"), rs.getString("email"));
             }
         } catch (SQLException e) {
             throw new RuntimeException("Could not validate session: " + e.getMessage(), e);
@@ -306,7 +321,7 @@ public class UserStore {
 
         String token = createSession(userId);
         Map<String, Object> row = findRawByPhone(phone);
-        Map<String, Object> user = publicUser(userId, (String) row.get("name"), phone, (String) row.get("role"));
+        Map<String, Object> user = publicUser(userId, (String) row.get("name"), phone, (String) row.get("role"), (String) row.get("email"));
         return AuthResult.success(user, token);
     }
 
@@ -363,6 +378,91 @@ public class UserStore {
         }
     }
 
+    /* ---------------- Firebase-authenticated accounts (email/password or Google) ---------------- */
+
+    /**
+     * Looks up (or creates on first login) the local account matching a verified
+     * Firebase user. Called after TreatzaServer verifies the ID token the app
+     * sent — this method itself does no verification, it trusts the caller.
+     * Phone number isn't collected by Firebase, so a fresh account starts with
+     * phone = null; the app should prompt for it right after (see setPhone()).
+     */
+    public AuthResult findOrCreateFirebaseUser(String firebaseUid, String email, String name) {
+        if (firebaseUid == null || firebaseUid.isEmpty()) return AuthResult.fail("Invalid Firebase account");
+
+        String findSql = "SELECT id, name, phone, role, email FROM users WHERE firebase_uid = ?";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(findSql)) {
+            ps.setString(1, firebaseUid);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    Map<String, Object> user = publicUser(rs.getString("id"), rs.getString("name"),
+                            rs.getString("phone"), rs.getString("role"), rs.getString("email"));
+                    String token = createSession(rs.getString("id"));
+                    return AuthResult.success(user, token);
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not look up account: " + e.getMessage(), e);
+        }
+
+        String id = "U-" + Long.toString(System.currentTimeMillis(), 36).toUpperCase();
+        String displayName = (name == null || name.trim().isEmpty()) ? (email == null ? "Customer" : email) : name.trim();
+        String insertSql = "INSERT INTO users (id, name, phone, role, firebase_uid, email, created_at) " +
+                "VALUES (?,?,NULL,'customer',?,?,?)";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(insertSql)) {
+            ps.setString(1, id);
+            ps.setString(2, displayName);
+            ps.setString(3, firebaseUid);
+            ps.setString(4, email);
+            ps.setString(5, Instant.now().toString());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not create account: " + e.getMessage(), e);
+        }
+
+        Map<String, Object> user = publicUser(id, displayName, null, "customer", email);
+        String token = createSession(id);
+        return AuthResult.success(user, token);
+    }
+
+    /** Saves the customer's mandatory phone number after their first Firebase login. */
+    public AuthResult setPhone(String userId, String phone) {
+        phone = normalizePhone(phone);
+        if (!phone.matches("[0-9]{10}")) return AuthResult.fail("Enter a valid 10-digit phone number");
+
+        String checkSql = "SELECT id FROM users WHERE phone = ? AND id != ?";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(checkSql)) {
+            ps.setString(1, phone);
+            ps.setString(2, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return AuthResult.fail("This phone number is already linked to another account");
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not check phone number: " + e.getMessage(), e);
+        }
+
+        String sql = "UPDATE users SET phone = ? WHERE id = ?";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, phone);
+            ps.setString(2, userId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not save phone number: " + e.getMessage(), e);
+        }
+
+        String findSql = "SELECT name, role, email FROM users WHERE id = ?";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(findSql)) {
+            ps.setString(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                Map<String, Object> user = publicUser(userId, rs.getString("name"), phone, rs.getString("role"), rs.getString("email"));
+                return AuthResult.success(user, null);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not read updated account: " + e.getMessage(), e);
+        }
+    }
+
     /* ---------------- lookups ---------------- */
 
     private Map<String, Object> findRawByPhone(String phone) {
@@ -378,6 +478,7 @@ public class UserStore {
                 m.put("password_hash", rs.getString("password_hash"));
                 m.put("password_salt", rs.getString("password_salt"));
                 m.put("role", rs.getString("role"));
+                m.put("email", rs.getString("email"));
                 return m;
             }
         } catch (SQLException e) {
@@ -403,12 +504,14 @@ public class UserStore {
 
     /* ---------------- helpers ---------------- */
 
-    private static Map<String, Object> publicUser(String id, String name, String phone, String role) {
+    private static Map<String, Object> publicUser(String id, String name, String phone, String role, String email) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", id);
         m.put("name", name);
         m.put("phone", phone);
         m.put("role", role == null ? "customer" : role);
+        m.put("email", email);
+        m.put("needsPhone", phone == null || phone.trim().isEmpty());
         return m;
     }
 

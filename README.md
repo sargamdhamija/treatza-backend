@@ -186,6 +186,75 @@ Toggle it from the admin dashboard's **Settings** tab.
 - **Distance-based delivery fee** — needs a maps/geocoding provider (e.g. Google
   Maps Distance Matrix API), which requires its own billed API key.
 
+## 9. Firebase login (email/password + Google Sign-In)
+
+Customer login moved from phone+password to **Firebase Authentication** —
+email/password or "Sign in with Google" — because it comes with automatic
+password-reset emails for free (no SMS/email service needed on our side).
+Phone number is still mandatory, but now collected as a required step right
+after first login instead of at signup (Google/email sign-in doesn't ask for it).
+
+- `POST /api/auth/firebase-login` — body `{ idToken }` (the ID token the app
+  gets from Firebase after the customer signs in) → verifies it and returns
+  `{ token, user }`, same shape as the old signup/login endpoints. The returned
+  `user.needsPhone` is `true` until the phone step below is completed.
+- `PATCH /api/auth/profile` — header `Authorization: Bearer <token>`, body
+  `{ phone }` → saves the customer's phone number.
+
+**Setup required** (`.env`):
+```
+FIREBASE_PROJECT_ID=treatzabakery
+```
+
+Token verification (`FirebaseAuth.java`) is hand-written using only the JDK —
+no extra library/build tool needed. It fetches Google's public signing certs,
+verifies the token's RS256 signature and standard claims (issuer, audience,
+expiry) itself, the same thing the official Firebase Admin SDK does under the
+hood.
+
+The old phone+password login (`/api/auth/signup`, `/api/auth/login`) still
+works exactly as before — it's what **staff/admin accounts** (see section 8)
+continue to use to log into the dashboard. Only the customer-facing app switched
+to Firebase.
+
+**A file you'll need going forward, but don't commit anywhere public:**
+`firebase-service-account.json` (from Firebase Console → Project Settings →
+Service Accounts → Generate new private key) — needed to actually send push
+notifications (see section 10 below). It's already in `.gitignore`.
+
+## 10. Push notifications (order status)
+
+When you change an order's status from the admin dashboard, the customer who
+placed it (if they were logged in) now gets a push notification — no SMS/email
+cost, this rides on the same free Firebase project as login.
+
+- `POST /api/notifications/register-token` — header `Authorization: Bearer
+  <token>`, body `{ token }` — the app calls this after login to tell the
+  backend which device to notify. A customer can have several registered
+  devices (e.g. after reinstalling the app); all of them get notified.
+- Existing `PATCH /api/orders/{id}` (admin) now also triggers a notification
+  automatically whenever `orderStatus` changes — no separate call needed.
+
+**Setup required:**
+1. Place `firebase-service-account.json` in this folder (same one as the
+   `.java` files) — the default `FIREBASE_SERVICE_ACCOUNT_PATH` in `.env`
+   already points here.
+2. That's it — if the file is present and valid, push notifications turn on
+   automatically. If it's missing, the server logs a note and just skips
+   sending (nothing else breaks).
+
+**Important — this changes how you test the whole app going forward, not just
+push notifications.** The native Firebase SDK
+(`@react-native-firebase/messaging`) doesn't exist inside the plain Expo Go
+app — once it's part of the project, Expo Go can no longer open the app at
+all (this is exactly the tradeoff you agreed to earlier when choosing raw
+Firebase over Expo's own push service). From now on, use an Expo
+**development build** instead (`eas build --profile development`) for all
+testing, not just push notifications.
+
+Guest orders (no account) don't get notifications, since there's no device to
+notify — nothing changes for them otherwise.
+
 Sessions last 30 days. Your frontend (app/website) should store the `token` (e.g. in
 `localStorage`) and send it as `Authorization: Bearer <token>` on any request that
 needs to know who the customer is.
