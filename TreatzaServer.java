@@ -22,6 +22,7 @@ public class TreatzaServer {
     static FirebaseAuth firebaseAuth;
     static FirebaseMessaging pushService;
     static DeviceTokenStore deviceTokens;
+    static MapsClient mapsClient;
 
     public static void main(String[] args) throws Exception {
         Env env = new Env(".env");
@@ -38,6 +39,7 @@ public class TreatzaServer {
         firebaseAuth = new FirebaseAuth(env.get("FIREBASE_PROJECT_ID", "treatzabakery"));
         pushService = new FirebaseMessaging(env.get("FIREBASE_SERVICE_ACCOUNT_PATH", "firebase-service-account.json"));
         deviceTokens = new DeviceTokenStore(databaseUrl);
+        mapsClient = new MapsClient(env.get("GOOGLE_MAPS_API_KEY", ""));
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/health", TreatzaServer::handleHealth);
@@ -53,6 +55,9 @@ public class TreatzaServer {
         server.createContext("/api/admin/staff", TreatzaServer::handleStaff);
         server.createContext("/api/admin/reset-codes", TreatzaServer::handleResetCodes);
         server.createContext("/api/notifications/register-token", TreatzaServer::handleRegisterDeviceToken);
+        server.createContext("/api/delivery-fee", TreatzaServer::handleDeliveryFee);
+        server.createContext("/api/delivery-settings", TreatzaServer::handleDeliverySettingsPublic);
+        server.createContext("/api/admin/delivery-settings", TreatzaServer::handleAdminDeliverySettings);
         server.createContext("/", TreatzaServer::handleStatic);
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
@@ -644,6 +649,83 @@ public class TreatzaServer {
 
         deviceTokens.register((String) user.get("id"), token);
         sendJson(ex, 200, Collections.singletonMap("ok", true));
+    }
+
+    /* ---------------- distance-based delivery fee ---------------- */
+
+    @SuppressWarnings("unchecked")
+    static void handleDeliveryFee(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!ex.getRequestMethod().equals("POST")) { sendError(ex, 405, "Method not allowed"); return; }
+
+        Map<String, Object> body;
+        try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+        catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+        String address = Json.getString(body, "address", "");
+
+        if (!mapsClient.isEnabled()) {
+            sendError(ex, 503, "Distance-based delivery isn't set up yet — using a flat rate for now");
+            return;
+        }
+
+        Map<String, Object> deliverySettings = settings.getDeliverySettings();
+        String bakeryAddress = (String) deliverySettings.get("bakeryAddress");
+        double baseFee = (double) deliverySettings.get("baseFee");
+        double perKmRate = (double) deliverySettings.get("perKmRate");
+        double maxKm = (double) deliverySettings.get("maxKm");
+
+        MapsClient.DistanceResult result = mapsClient.getDistanceKm(bakeryAddress, address);
+        if (!result.found) {
+            sendError(ex, 400, result.errorMessage);
+            return;
+        }
+
+        boolean withinRange = result.distanceKm <= maxKm;
+        double fee = Math.ceil(baseFee + perKmRate * result.distanceKm);
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("distanceKm", Math.round(result.distanceKm * 10.0) / 10.0);
+        resp.put("fee", withinRange ? Double.valueOf(fee) : null);
+        resp.put("withinRange", withinRange);
+        resp.put("message", withinRange ? null : "Sorry, that address is outside our delivery area (" + maxKm + " km).");
+        sendJson(ex, 200, resp);
+    }
+
+    /** Lets the app show delivery-area info (e.g. "we deliver within 10 km") without needing an address yet. */
+    static void handleDeliverySettingsPublic(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!ex.getRequestMethod().equals("GET")) { sendError(ex, 405, "Method not allowed"); return; }
+        Map<String, Object> deliverySettings = settings.getDeliverySettings();
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("maxKm", deliverySettings.get("maxKm"));
+        resp.put("baseFee", deliverySettings.get("baseFee"));
+        resp.put("perKmRate", deliverySettings.get("perKmRate"));
+        resp.put("distanceBasedEnabled", mapsClient.isEnabled());
+        sendJson(ex, 200, resp);
+    }
+
+    @SuppressWarnings("unchecked")
+    static void handleAdminDeliverySettings(HttpExchange ex) throws IOException {
+        addCors(ex);
+        if (isPreflight(ex)) return;
+        if (!checkAdmin(ex)) return;
+
+        if (ex.getRequestMethod().equals("GET")) {
+            sendJson(ex, 200, settings.getDeliverySettings());
+            return;
+        }
+        if (!ex.getRequestMethod().equals("PATCH")) { sendError(ex, 405, "Method not allowed"); return; }
+        Map<String, Object> body;
+        try { body = (Map<String, Object>) Json.parse(readBody(ex)); }
+        catch (Exception e) { sendError(ex, 400, "Invalid JSON body"); return; }
+        settings.setDeliverySettings(
+                Json.getString(body, "bakeryAddress", ""),
+                Json.getDouble(body, "baseFee", 20),
+                Json.getDouble(body, "perKmRate", 8),
+                Json.getDouble(body, "maxKm", 10));
+        sendJson(ex, 200, settings.getDeliverySettings());
     }
 
     /* ---------------- static file serving (admin.html) ---------------- */

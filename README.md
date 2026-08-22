@@ -178,13 +178,8 @@ Toggle it from the admin dashboard's **Settings** tab.
   the top 10 best-selling items, and a day-by-day breakdown for the last 7 days.
   Shown in the admin dashboard's **Analytics** tab.
 
-### Still needs your own account + API key (not something I can wire up blind)
-- **Order status notifications** (SMS or push) — needs an SMS provider (e.g.
-  Twilio, MSG91) or Firebase for push notifications. Once you have credentials,
-  this plugs in fairly easily on top of the `orderStatus` field that already
-  exists on every order.
-- **Distance-based delivery fee** — needs a maps/geocoding provider (e.g. Google
-  Maps Distance Matrix API), which requires its own billed API key.
+### Order status notifications — done, see section 10 below
+### Distance-based delivery fee — done, see section 11 below
 
 ## 9. Firebase login (email/password + Google Sign-In)
 
@@ -255,15 +250,44 @@ testing, not just push notifications.
 Guest orders (no account) don't get notifications, since there's no device to
 notify — nothing changes for them otherwise.
 
-Sessions last 30 days. Your frontend (app/website) should store the `token` (e.g. in
-`localStorage`) and send it as `Authorization: Bearer <token>` on any request that
-needs to know who the customer is.
+## 11. Distance-based delivery fee
 
-**Try it now:** open `http://localhost:4000/login-test.html` — a small test page
-included in `public/` that lets you sign up and log in through the browser, so you
-can confirm it all works before wiring it into your real app/website.
+Delivery pricing now scales with how far the customer is from the bakery:
+`fee = base fee + (per-km rate × distance in km)`, rounded up to the nearest
+rupee. Beyond a configurable maximum distance, delivery isn't offered at all.
 
-Note: this backend zip doesn't include a customer-facing storefront app, so
-`login-test.html` is just there for testing the API. If you tell me about your actual
-frontend (web app, or a specific app framework), I can wire the real login screens
-up to these same endpoints.
+- `POST /api/delivery-fee` — public, body `{ address }` → returns
+  `{ distanceKm, fee, withinRange, message }`. The app calls this once the
+  customer has entered a delivery address, to show them the real fee before
+  they check out.
+- `GET /api/delivery-settings` — public, returns the max delivery distance and
+  current base fee/per-km rate (so the app can say "we deliver within 10 km"
+  even before an address is entered).
+- `GET /api/admin/delivery-settings` / `PATCH /api/admin/delivery-settings` —
+  admin only, configure the bakery's address (the "origin" point) and pricing.
+  There's a **Delivery pricing** section in the dashboard's Settings tab for
+  this — no code changes needed to adjust rates later.
+
+**Setup required** — this one needs a Google Cloud account with billing
+enabled (Google requires a card on file to use the Distance Matrix API, even
+though it comes with a recurring free monthly credit that covers a small
+bakery's usage many times over):
+
+1. Go to https://console.cloud.google.com, create a project (or reuse one)
+2. **APIs & Services → Library** → search "Distance Matrix API" → Enable
+3. **Billing** → link a billing account (required by Google, even for the free
+   tier)
+4. **APIs & Services → Credentials** → Create Credentials → API key
+5. (Recommended) Restrict the key to only the Distance Matrix API, so it can't
+   be misused if it ever leaks
+6. Add it to `.env`:
+   ```
+   GOOGLE_MAPS_API_KEY=your-key-here
+   ```
+7. In the admin dashboard's Settings tab, enter your bakery's full address and
+   set your base fee / per-km rate / max delivery distance
+
+**Until you do this**, the app keeps using the flat ₹40 delivery fee — nothing
+breaks in the meantime, `/api/delivery-fee` just responds that distance-based
+pricing isn't set up yet, and the admin dashboard shows a note about it.
+

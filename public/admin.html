@@ -163,6 +163,32 @@
         <button class="refresh-btn" style="width:100%;margin-top:8px" onclick="saveStoreMessage()">Save message</button>
       </div>
 
+      <div class="section-title">Delivery pricing</div>
+      <div class="status-banner">
+        <div id="deliveryOffStatus" style="display:none;font-size:12px;color:var(--inkfaint);margin-bottom:10px">
+          Distance-based pricing isn't active yet — the app is using a flat delivery fee until a Google Maps API key
+          is added to the backend's <code>.env</code> (see README section 11). You can still set the numbers below —
+          they'll take effect automatically as soon as the key is added.
+        </div>
+        <label style="font-size:12px;color:var(--inkfaint)">Bakery address (delivery distance is measured from here)</label>
+        <input id="bakeryAddress" placeholder="Full shop address">
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <div style="flex:1">
+            <label style="font-size:11px;color:var(--inkfaint)">Base fee (₹)</label>
+            <input id="deliveryBaseFee" type="number">
+          </div>
+          <div style="flex:1">
+            <label style="font-size:11px;color:var(--inkfaint)">Per km (₹)</label>
+            <input id="deliveryPerKmRate" type="number">
+          </div>
+          <div style="flex:1">
+            <label style="font-size:11px;color:var(--inkfaint)">Max km</label>
+            <input id="deliveryMaxKm" type="number">
+          </div>
+        </div>
+        <button class="refresh-btn" style="width:100%;margin-top:10px" onclick="saveDeliverySettings()">Save delivery pricing</button>
+      </div>
+
       <div class="section-title">Password reset requests</div>
       <div id="resetCodesList"></div>
 
@@ -466,8 +492,37 @@
       renderStoreToggle();
       document.getElementById('statusMessage').value = status.message || '';
     }catch(e){}
+    loadDeliverySettings();
     loadResetCodes();
     loadStaff();
+  }
+
+  async function loadDeliverySettings(){
+    try{
+      const publicRes = await fetch(`${API_BASE}/api/delivery-settings`);
+      const pub = await publicRes.json();
+      document.getElementById('deliveryOffStatus').style.display = pub.distanceBasedEnabled ? 'none' : 'block';
+
+      const adminRes = await fetch(`${API_BASE}/api/admin/delivery-settings`, { headers: adminHeaders() });
+      const d = await adminRes.json();
+      document.getElementById('bakeryAddress').value = d.bakeryAddress || '';
+      document.getElementById('deliveryBaseFee').value = d.baseFee ?? 20;
+      document.getElementById('deliveryPerKmRate').value = d.perKmRate ?? 8;
+      document.getElementById('deliveryMaxKm').value = d.maxKm ?? 10;
+    }catch(e){}
+  }
+
+  async function saveDeliverySettings(){
+    const bakeryAddress = document.getElementById('bakeryAddress').value.trim();
+    const baseFee = parseFloat(document.getElementById('deliveryBaseFee').value);
+    const perKmRate = parseFloat(document.getElementById('deliveryPerKmRate').value);
+    const maxKm = parseFloat(document.getElementById('deliveryMaxKm').value);
+    if(isNaN(baseFee) || isNaN(perKmRate) || isNaN(maxKm)) return alert('Enter valid numbers');
+    await fetch(`${API_BASE}/api/admin/delivery-settings`, {
+      method: 'PATCH', headers: adminHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ bakeryAddress, baseFee, perKmRate, maxKm })
+    });
+    alert('Saved');
   }
 
   function renderStoreToggle(){

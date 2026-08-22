@@ -2,8 +2,8 @@
 .env
 firebase-service-account.json
 google-services.json
-firebase/
 
 # Build output
 *.class
 postgresql.jar
+firebase/

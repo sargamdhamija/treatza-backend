@@ -69,10 +69,22 @@ public class SettingsStore {
                 "message TEXT NOT NULL DEFAULT '', " +
                 "updated_at TEXT" +
                 ")";
+        // Delivery pricing — fee = base_fee + (per_km_rate * distance in km),
+        // rounded up to the nearest rupee. Orders beyond max_km aren't offered
+        // delivery at all. bakery_address is the "origin" point used to look
+        // up the distance to the customer via Google's Distance Matrix API.
+        String addBakeryAddress = "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS bakery_address TEXT NOT NULL DEFAULT ''";
+        String addBaseFee = "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS delivery_base_fee DOUBLE PRECISION NOT NULL DEFAULT 20";
+        String addPerKmRate = "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS delivery_per_km_rate DOUBLE PRECISION NOT NULL DEFAULT 8";
+        String addMaxKm = "ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS delivery_max_km DOUBLE PRECISION NOT NULL DEFAULT 10";
         try (Connection c = connect(); Statement st = c.createStatement()) {
             st.execute(sql);
             st.execute("INSERT INTO store_settings (id, is_open, message, updated_at) VALUES ('status', true, '', '" +
                     Instant.now() + "') ON CONFLICT (id) DO NOTHING");
+            st.execute(addBakeryAddress);
+            st.execute(addBaseFee);
+            st.execute(addPerKmRate);
+            st.execute(addMaxKm);
         } catch (SQLException e) {
             throw new RuntimeException("Could not set up store_settings table: " + e.getMessage(), e);
         }
@@ -104,6 +116,38 @@ public class SettingsStore {
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Could not update store status: " + e.getMessage(), e);
+        }
+    }
+
+    /* ---------------- delivery pricing ---------------- */
+
+    public Map<String, Object> getDeliverySettings() {
+        String sql = "SELECT bakery_address, delivery_base_fee, delivery_per_km_rate, delivery_max_km FROM store_settings WHERE id = 'status'";
+        try (Connection c = connect(); Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            if (rs.next()) {
+                m.put("bakeryAddress", rs.getString("bakery_address"));
+                m.put("baseFee", rs.getDouble("delivery_base_fee"));
+                m.put("perKmRate", rs.getDouble("delivery_per_km_rate"));
+                m.put("maxKm", rs.getDouble("delivery_max_km"));
+            }
+            return m;
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not read delivery settings: " + e.getMessage(), e);
+        }
+    }
+
+    public void setDeliverySettings(String bakeryAddress, double baseFee, double perKmRate, double maxKm) {
+        String sql = "UPDATE store_settings SET bakery_address = ?, delivery_base_fee = ?, delivery_per_km_rate = ?, delivery_max_km = ?, updated_at = ? WHERE id = 'status'";
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, bakeryAddress == null ? "" : bakeryAddress);
+            ps.setDouble(2, baseFee);
+            ps.setDouble(3, perKmRate);
+            ps.setDouble(4, maxKm);
+            ps.setString(5, Instant.now().toString());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Could not update delivery settings: " + e.getMessage(), e);
         }
     }
 }
